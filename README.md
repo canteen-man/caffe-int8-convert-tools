@@ -1,3 +1,60 @@
+记录下我对fp32转int8或者fp16的理解，有不对地方欢迎指正。
+
+tensort支持通过输出大量图像的办法或得int8或者fp16的权重。获得低bit权重能获得更快的计算速度。
+最近在做FPGA，以我对PFGA的理解，xilinx的zynq系列soc中的FPGA内包含的DSP模块，这个DSP不是DSP芯片，是xilinx设计的DSP电路，可以完成乘法累加操作。
+
+乘累加有个高大上的英文缩写，MACC。
+
+xilinx的DSP可以在一个时钟周期内完成两次int8的乘累加，因为DSP输入位宽固定，输入数的位宽越小，一个时钟周期内算出来的结果也就越短，并行度也就越大。
+
+再如以ARM为例，
+这是我做的ARM neon指令集的3×3卷积程序，https://github.com/canteen-man/arm_neon_conv_3-3
+int类型的整数最高可以以SIMD的计算方式达到8个寄存器同时计算，而float32则没有这么大的并行度。
+
+
+所以如果cnn的权重都用int8，会根据不同的硬件设备加快计算速度。
+
+但需要注意的是，这不能降低读写的速度，具体为什么，就要研究下float32是怎么转到int8的了。
+
+参考了网上其他人的总结和分享，我大致理解float32转int8的流程如下:
+
+
+首先对已有的float32做直方图统计，既然要做直方图统计就要分成每一个小柱形的统计区间，float32分布密集，就要自己设计统计小区间，按照nvidia的设计，是2048个bin。不过这2048个bin貌似是一侧的，以0位中心分为左右两侧。
+
+
+不能直接把最大的两个值映射到int8的最大值127，因为饱和映射没有不饱和映射好，这个好理解，不能为了一个极端的值而压缩了另外许多值。
+
+下一步，利用KL散度优化，开始不断的取阈值T，求出KL散度优化最小的T，即为要做的阈值。
+
+最近发现channel pruning，BNN和int8量化的核心都是优化方法。
+
+想想channel pruning，刚读论文的时候还很是惊讶，什么索套回归，之前都没听过。后来发现巧妙之处，太巧妙了，这索套回归的优化目的和cnn删除冗余卷积核后保证特征图重构误差最小的优化目的完全相同。
+
+
+研究BNN时发现也是优化方法，研究转int8的时候又发现KL散度优化还是优化方法。
+
+如果我要是博士的话，我就先把优化方法彻底的好好学一遍，然后没准哪个最优化的公式就能套进cnn，发个CCF A类。
+
+
+得出阈值T后就能映射到int8了，所以就会有个scale。
+
+但这个scale是从权重读进后再做scale，因为每一层的scale不同，每次做完卷积要再从int8回到float32，再从float32转到下一次int8，所以读取速度就没变。
+
+按照ARM+FPGA的理解，就是AXI总线的传输效率没变，每次从DDR读图或者读权重的时间没变，读进BRAM后在折腾成int8，再输入DSP做计算，加速是加速在计算这步时间了。
+
+貌似在哪听说tensorrt转换完的trt模型不能打印出权重，所以想拿tensort转换int8后用到其他地方的思路貌似是走不通了。
+
+
+
+tensorrt转int8效果好的另一个原因是他是输入标定图像的，这个标定图像不是标定相机的那意思，就是把一堆图像输入，这样统计激活的分布就会更准，然后做KL散度优化的时候就更有代表性。
+
+
+
+
+
+
+
+
 # Caffe-Int8-Convert-Tools
 
 This convert tools is base on TensorRT 2.0 Int8 calibration tools,which use the KL algorithm to find the suitable threshold to quantize the activions from Float32 to Int8(-128 - 127).
